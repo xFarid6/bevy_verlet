@@ -1,4 +1,3 @@
-// allow dead code
 #![allow(dead_code)]
 #![allow(unused_variables)]
 #![allow(unused_imports)]
@@ -7,30 +6,52 @@ use bevy::{
     diagnostic::{Diagnostics, FrameTimeDiagnosticsPlugin, LogDiagnosticsPlugin},
     prelude::*,
     time::FixedTimestep,
-    window::PresentMode, input::{keyboard::KeyboardInput, mouse::MouseMotion},
+    window::PresentMode, input::{keyboard::KeyboardInput, mouse::MouseMotion}, render::view::window,
 };
 use rand::{thread_rng, Rng};
+use std::rc::Rc;
 
-const GRAVITY: f32 = -9.8 * 1000.0;
+use bevy_inspector_egui::quick::WorldInspectorPlugin;
+use bevy_hanabi::prelude::*;
+use bevy_ecs_tilemap::prelude::*;
+use bevy_ecs_ldtk::prelude::*;
+use bevy_rapier2d::prelude::*;
 
-#[derive(Resource)]
-struct BevyCounter {
-    pub count: usize,
+const GRAVITY: Vec2 = Vec2::new(0.0, -9.8 * 100.0);
+
+#[derive(Component, Clone, Copy)]
+struct VerletObject {
+    position_current: Vec2,
+    position_old: Vec2,
+    acceleration: Vec2,
 }
 
-#[derive(Component)]
-struct Circle {
-    pos: Vec2,
-    radius: f32,
-    prev_pos: Vec2,
-    acceleration: Vec2,
+impl VerletObject {
+    fn new() -> Self {
+        Self {
+            position_current: Vec2::new(0.0, 0.0),
+            position_old: Vec2::new(0.0, 0.0),
+            acceleration: Vec2::new(0.0, 0.0),
+        }
+    }
+
+    fn accelerate(&mut self, acc: Vec2) {
+        self.acceleration += acc;
+
+    }
+
+    fn update_position(&mut self, dt: f32) {
+        let velocity: Vec2 = self.position_current - self.position_old;
+        self.position_old = self.position_current;
+
+        self.position_current += velocity + self.acceleration * dt * dt;
+        self.acceleration = Vec2::new(0.0, 0.0);
+        
+    }
 }
 
 fn main() {
     App::new()
-        .insert_resource(BevyCounter {
-            count: 0,
-        })
         .add_plugins(DefaultPlugins
             .set(ImagePlugin::default_nearest())
             .set(WindowPlugin {
@@ -47,161 +68,111 @@ fn main() {
         )
         .add_plugin(FrameTimeDiagnosticsPlugin::default())
         .add_plugin(LogDiagnosticsPlugin::default())
+        .add_plugin(WorldInspectorPlugin)
+        .add_plugin(HanabiPlugin)
+        .add_plugin(LdtkPlugin)
+        //.add_plugin(RapierPlugin)
         
         .add_startup_system(setup)
-
-        .add_system(update_circles)
-        .add_system(collision_system)
-        .add_system(keyboard_system)
-        .add_system(mouse_handler)
+        
+        .add_system(bevy::window::close_on_esc)
+        .add_system(keyboard_controls)
+        .add_system(update_verlet)
 
         .run();
 }
 
-fn keyboard_system(keyboard_input: Res<Input<KeyCode>>, mut query: Query<(&mut Circle, &mut Transform)>) {
-    for (circle, mut transform) in &mut query {
-        if keyboard_input.pressed(KeyCode::Left) {
-            transform.translation.x -= 1.;
-        }
-        if keyboard_input.pressed(KeyCode::Right) {
-            transform.translation.x += 1.;
-        }
-        if keyboard_input.pressed(KeyCode::Up) {
-            transform.translation.y += 1.;
-        }
-        if keyboard_input.pressed(KeyCode::Down) {
-            transform.translation.y -= 1.;
-        }
-
-        if keyboard_input.pressed(KeyCode::Escape) {
-            std::process::exit(0);
-        }
-    }
-}
-
-fn mouse_handler(
-    mouse_button_input: ResMut<Input<MouseButton>>,
-    mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    windows: Res<Windows>,
-) {
-    if mouse_button_input.just_pressed(MouseButton::Left) {
-        println!("Left mouse button pressed");
-        let mx = windows.get_primary().unwrap().cursor_position().unwrap().x;
-        let my = windows.get_primary().unwrap().cursor_position().unwrap().y;
-        println!("Mouse position: {}, {}", mx, my);
-        commands.spawn((SpriteBundle {
-            texture: asset_server.load("circle.png"),
-            transform: Transform::from_scale(Vec3::splat(0.1)),
-            ..default()
-        },
-        Circle {
-            pos: Vec2::new(mx, my),
-            radius: 25.,
-            prev_pos: Vec2::new(0., 0.),
-            acceleration: Vec2::new(0., 0.),
-        }));
-    }
-    if mouse_button_input.just_pressed(MouseButton::Right) {
-        println!("Right mouse button pressed");
-    }
-    if mouse_button_input.just_pressed(MouseButton::Middle) {
-        println!("Middle mouse button pressed");
-    }
-}
-
 fn setup(mut commands: Commands, asset_server: Res<AssetServer>) {
-    // spawn camera
+    
     commands.spawn(Camera2dBundle::default());
 
-    let sprite_handle = asset_server.load("circle.png");
+    let mut circles = vec![];
+    let circle_handle = asset_server.load("circle.png");
 
-    commands.spawn((SpriteBundle {
-        texture: sprite_handle.clone(),
-        transform: Transform::from_scale(Vec3::splat(0.1)),
-        ..default()
-    },
-    Circle {
-        pos: Vec2::new(0., 0.),
-        radius: 25.,
-        prev_pos: Vec2::new(0., 0.),
-        acceleration: Vec2::new(0., 0.),
-    }));
+    circles.push((
+        SpriteBundle {
+            texture: circle_handle.clone(), 
+            transform: Transform::from_scale(Vec3::splat(0.1)),
+            sprite: Sprite::default(),
+            ..default()
+        },
+        VerletObject::new(),
+        )
+    );
+
+    commands.spawn_batch(circles);
+
 }
 
-fn update_circles(mut query: Query<(&mut Circle, &mut Transform)>, time: Res<Time>) {
-    for (mut circle, mut transform) in &mut query {
-        let dt = time.delta_seconds();
+fn keyboard_controls(
+    keyboard_input: Res<Input<KeyCode>>,
+) {
 
-        // gravity
-        circle.acceleration.y += GRAVITY * dt;
+}
 
-        let velocity = circle.pos - circle.prev_pos;
+fn update_verlet(
+    time: Res<Time>,
+    objects: &mut Query<(&mut Transform, &mut VerletObject)>,
+    win: ResMut<Windows>,    
+) {
+    let sub_steps = 2;
+    let dt = time.delta_seconds();
+    let sub_dt: f32 = dt / sub_steps as f32;
 
-        circle.prev_pos = circle.pos;
-        circle.pos = circle.pos + velocity + circle.acceleration * dt * dt;
-        circle.acceleration = Vec2::new(0., 0.);
-
-        transform.translation.x = circle.pos.x;
-        transform.translation.y = circle.pos.y;
+    for i in (0..sub_steps).rev() {
+        apply_gravity(&mut objects);
+        apply_constraints(&mut objects, &win);
+        solve_collisions(&mut objects);
+        update_positions(&mut objects, sub_dt);
     }
 }
 
-fn collision_system(windows: Res<Windows>, mut query: Query<(&mut Circle, &mut Transform)>, time: Res<Time>) {
-    let window = windows.primary();
-    let window_height = window.height() as f32;
-    let window_width = window.width() as f32;
+fn apply_gravity(objects: &mut Query<(&mut Transform, &mut VerletObject)>) {
+    for (_, mut obj) in objects.iter_mut() {
+        obj.accelerate(GRAVITY);
+    }
+}
 
-    for (mut circle, mut transform) in &mut query {
-        // bottom of window
-        if transform.translation.y - circle.radius < - window_height / 2. {
-            transform.translation.y = - window_height / 2. + circle.radius;
-            circle.pos.y = transform.translation.y;
-            circle.prev_pos.y = transform.translation.y;
-            circle.acceleration.y = 0.;
+fn apply_constraints(
+    objects: &mut Query<(&mut Transform, &mut VerletObject)>,
+    win: &ResMut<Windows>
+) {
+    let screen = win.get_primary().unwrap();
+    let bottom = - screen.height() / 2.0;
+    let top = screen.height() / 2.0;
+    let left = - screen.width() / 2.0;
+    let right = screen.width() / 2.0;
+
+    let radius = 26.;
+       
+    for (_, mut obj) in objects.iter_mut() {
+        // Bottom
+        if obj.position_current.y < bottom + radius {
+            obj.position_current.y = bottom + radius;
         }
-        // top of window
-        if transform.translation.y + circle.radius > window_height / 2. {
-            transform.translation.y = window_height / 2. - circle.radius;
-            circle.pos.y = transform.translation.y;
-            circle.prev_pos.y = transform.translation.y;
-            circle.acceleration.y = 0.;
+        // Top
+        if obj.position_current.y > top - radius {
+            obj.position_current.y = top - radius;
         }
-        // left of window
-        if transform.translation.x - circle.radius < - window_width / 2. {
-            transform.translation.x = - window_width / 2. + circle.radius;
-            circle.pos.x = transform.translation.x;
-            circle.prev_pos.x = transform.translation.x;
-            circle.acceleration.x = 0.;
+        // Left
+        if obj.position_current.x < left + radius {
+            obj.position_current.x = left + radius;
         }
-        // right of window
-        if transform.translation.x + circle.radius > window_width / 2. {
-            transform.translation.x = window_width / 2. - circle.radius;
-            circle.pos.x = transform.translation.x;
-            circle.prev_pos.x = transform.translation.x;
-            circle.acceleration.x = 0.;
+        // Right
+        if obj.position_current.x > right - radius {
+            obj.position_current.x = right - radius;
         }
     }
+}
 
-    // collisions with other circles
-    let mut circles = query.iter_mut().collect::<Vec<_>>();
-    for i in 0..circles.len() {
-        let mut object_1 = &mut circles[i];
-        let k = i + 1;
-        for k in 0..circles.len() {
-            let object_2 = &mut circles[k];
+fn solve_collisions(objects: &mut Query<(&mut Transform, &mut VerletObject)>,) {
 
-            let (mut circle_1, mut transform_1) = &mut object_1;
-            let (mut circle_2, mut transform_2) = &mut object_2;
+}
 
-            let collision_axis = circle_1.pos - circle_2.pos;
-            let distance = collision_axis.length();
-            if distance < circle_1.radius + circle_2.radius {
-                let normal = collision_axis.normalize();
-                let delta = (circle_1.radius + circle_2.radius) - distance;
-                circle_1.pos += normal * delta * 0.5;
-            }
-        }
+
+fn update_positions(objects: &mut Query<(&mut Transform, &mut VerletObject)>, sub_dt: f32) {
+    for (mut transform, mut obj) in objects.iter_mut() {
+        obj.update_position(sub_dt);
+        transform.translation = Vec3::new(obj.position_current.x, obj.position_current.y, 0.0);
     }
-
 }
